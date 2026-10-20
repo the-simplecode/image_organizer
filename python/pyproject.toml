@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "image-organizer"
+version = "2.0.0"
+description = "Arrange images by camera EXIF metadata; serve the gallery over HTTP."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "fastapi>=0.100",
+  "uvicorn>=0.20",
+  "python-multipart>=0.0.6",
+]
+[project.optional-dependencies]
+test = ["pytest>=7", "httpx>=0.24"]
+
+[project.scripts]
+image-organizer = "image_organizer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["image_organizer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

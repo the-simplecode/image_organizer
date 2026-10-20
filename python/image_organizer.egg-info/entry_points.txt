@@ -1,0 +1,2 @@
+[console_scripts]
+image-organizer = image_organizer.cli:main

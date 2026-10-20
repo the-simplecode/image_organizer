@@ -1,63 +1,52 @@
-# image_organizer (upgraded)
+# image-organizer
 
-Copies JPEG/PNG images into `<output>/<Make>/<Model>/<YYYY-MM>/`, skips byte-identical
-duplicates (persistent SHA-256 manifest), then writes a TSV metadata file and an
-offline HTML gallery.
+Arrange a photo collection into a `<Make>/<Model>/<YYYY-MM>/` library using EXIF
+metadata, keep the metadata in SQLite, and browse or serve the result.
 
-## Files
-| File | Purpose |
-|---|---|
-| `image_organizer.cpp` | the program (C++17, single translation unit, same as before) |
-| `gallery_template.hpp` | CSS / markup / JavaScript of the gallery (static text, no logic) |
-| `tests/run_tests.py`, `tests/gallery_js_test.js` | automated tests |
-| `tests/shim/` | **test-only** stand-ins for libexif / OpenSSL headers (never use for real builds) |
+This is the Python successor to the original C++ tool. The arrangement rules are
+unchanged — same discovery rules, same SHA-256 de-duplication, same folder
+layout, same never-overwrite `_1` suffixes, same TSV/HTML reports — but the
+manifest now lives in a SQLite database, and a small FastAPI server replaces the
+static-page-only workflow.
 
-## Dependencies (same two libraries as before - nothing new)
-* **Ubuntu/Debian:** `sudo apt install build-essential pkg-config libexif-dev libssl-dev`
-* **Fedora:** `sudo dnf install gcc-c++ pkgconf libexif-devel openssl-devel`
-* **macOS (Homebrew):** `brew install libexif openssl@3 pkg-config` then
-  `export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig:$PKG_CONFIG_PATH"`
-* **Windows:** MSYS2 UCRT64: `pacman -S mingw-w64-ucrt-x86_64-{gcc,libexif,openssl,pkgconf}`
-  (or vcpkg: `vcpkg install libexif openssl`). GCC 8 needs `-lstdc++fs` added.
+## Layout of this repository
 
-## Build
+| Path | Contents |
+| --- | --- |
+| `python/` | The current implementation: the `image_organizer` package, its tests and its [README](python/README.md) |
+| `legacy/` | The original C++17 sources, kept for reference |
+
+## Quick start
+
+```bash
+cd python
+pip install -e ".[test]"
+
+image-organizer arrange ~/Pictures/shoot ~/Pictures/library 1
+image-organizer serve ~/Pictures/library --port 8000
 ```
-g++ -std=c++17 -O2 -Wall -Wextra -o image_organizer image_organizer.cpp $(pkg-config --cflags --libs libexif openssl)
-```
-(equivalent to the old `-lexif -lcrypto` line). Keep `gallery_template.hpp` next to the .cpp.
 
-## Run
-```
-./image_organizer [options] input_dir output_dir ascending(0|1)
-  --dry-run        preview; creates/changes nothing
-  -v, --verbose    also print each copied / duplicate file
-  --log-file FILE  append timestamped DEBUG..ERROR messages to FILE
-```
-The three positional arguments are unchanged. Exit codes: `0` ok, `1` bad arguments / fatal setup
-error, `2` finished but some images or reports failed, `130` interrupted (Ctrl-C).
+See [`python/README.md`](python/README.md) for the full command reference, the
+HTTP API, the deletion model and the exit codes.
 
-## Output layout
-```
-output_dir/
-  seen_sha                      manifest (hash, EXIF date, source, make, model, relative destination)
-  image_metadata.tsv            camMake <TAB> Cam_model <TAB> Date   (header + one row per image)
-  image_gallery.html            open directly in a browser (works offline, no server)
-  Canon/Canon EOS R5/2024-05/IMG_0001.jpg
-  Unknown_Make/Unknown_Model/Unknown_Date/...
-```
-Keep `image_gallery.html` at the root of `output_dir`; the whole folder can be moved or zipped.
+## Highlights
 
-## Report policy
-* TSV and gallery list **every image arranged in `output_dir`** (cumulative across runs, taken from the manifest);
-  duplicates, skipped and failed files get **no row**. Images whose arranged file was deleted are omitted with a warning.
-* Missing/invalid make, model or date -> `Unknown`. Date = EXIF `DateTimeOriginal` as `YYYY-MM-DD`
-  (no file-timestamp fallback). Tabs/newlines/control characters in EXIF text become spaces; invalid UTF-8 becomes `?`.
-* Reports are written to a temp file and renamed, so a failure never leaves a half-written or stale-but-misleading file.
-* Entries from an *old-format* `seen_sha` still prevent re-copying but are not listed (their destination was never recorded).
+* **Pure-Python EXIF parsing** — no libexif, Pillow or OpenCV needed. The only
+  runtime dependencies are FastAPI, uvicorn and python-multipart.
+* **SQLite metadata** — one row per image, keyed by SHA-256, with soft-delete
+  flags, per-user visibility and legacy-manifest import.
+* **Two kinds of deletion** — a soft delete hides an image but keeps the file;
+  permanent deletion (admin only) removes both the record and the file.
+* **A real gallery** — an offline-capable HTML page plus a JSON API, so the
+  collection can be browsed and curated over HTTP.
 
 ## Tests
+
+```bash
+cd python
+pytest
 ```
-pip install pillow
-python3 tests/run_tests.py            # builds with real libs if pkg-config finds them, else the shims
-python3 tests/run_tests.py ./image_organizer   # test an existing binary
-```
+
+The suite builds genuine JPEG and PNG files with real EXIF blocks, so the
+arrangement, parsing, API and deletion paths are all exercised against actual
+bytes rather than mocks.

@@ -1,0 +1,149 @@
+# image-organizer
+
+Arrange a photo collection into a `<Make>/<Model>/<YYYY-MM>/` library using EXIF
+metadata, keep the metadata in SQLite, and browse or serve the result.
+
+This is the Python successor to the original C++ tool. The arrangement rules are
+unchanged — same discovery rules, same SHA-256 de-duplication, same folder
+layout, same never-overwrite `_1` suffixes, same TSV/HTML reports — but the
+manifest now lives in a SQLite database, and a small FastAPI server replaces the
+static-page-only workflow.
+
+## Install
+
+```bash
+pip install -e .            # from the python/ directory
+pip install -e ".[test]"    # plus pytest and httpx
+```
+
+Python 3.9 or newer is required. The only runtime dependencies are FastAPI,
+uvicorn and python-multipart; EXIF is parsed in pure Python, so there is no
+libexif/Pillow requirement.
+
+## Command line
+
+```
+image-organizer <command> [options]
+```
+
+| Command | Purpose |
+| --- | --- |
+| `arrange INPUT OUTPUT [1\|0]` | Arrange images from `INPUT` into `OUTPUT` |
+| `serve LIBRARY` | Start the gallery web server |
+| `list LIBRARY` | List arranged images (`--json`, `--include-deleted`) |
+| `delete LIBRARY SHA` | Soft-delete: hide the image, keep the file |
+| `restore LIBRARY SHA` | Undo a soft delete |
+| `purge LIBRARY SHA` | Permanently delete the record **and** the file |
+| `purge-deleted LIBRARY` | Permanently delete every soft-deleted image |
+| `init-db LIBRARY` | Create or verify the library database |
+| `import-manifest LIBRARY` | Import a legacy `seen_sha` manifest into the DB |
+
+Every command also accepts `--log-file FILE`, `--verbose` and `--user NAME`.
+
+The legacy positional form still works, so `image-organizer INPUT OUTPUT`
+arranges just as it did before. `SHA` arguments accept an unambiguous prefix
+of the full SHA-256.
+
+### Examples
+
+```bash
+# Arrange ~/Pictures/shoot into ~/Pictures/library (oldest first).
+image-organizer arrange ~/Pictures/shoot ~/Pictures/library 1
+
+# Plan only, without writing anything.
+image-organizer arrange ~/Pictures/shoot ~/Pictures/library 1 --dry-run
+
+# Machine-readable inventory.
+image-organizer list ~/Pictures/library --json
+```
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | Fatal error (bad arguments, unwritable output, missing input) |
+| 2 | Partial success (a file failed, or a report could not be written) |
+| 130 | Interrupted (SIGINT); completed work is kept |
+
+## Arranged layout
+
+```
+library/
+  gallery.db            SQLite metadata (the "seen_sha" manifest, modernised)
+  image_metadata.tsv    Camera make / model / date report
+  image_gallery.html    Standalone gallery page (works from file://)
+  Canon/EOS R5/2021-03/a.jpg
+  Nikon/Z6/2022-07/b.jpg
+  Unknown_Make/Unknown_Model/Unknown_Date/c.png
+```
+
+Images whose EXIF is missing or unreadable land under `Unknown_Make`,
+`Unknown_Model` and `Unknown_Date` instead of being skipped.
+
+De-duplication is by SHA-256 of the file bytes: an identical file already in
+the library is skipped, never copied twice. If two different files would land
+on the same name, the second one becomes `name_1.jpg`.
+
+## Deletion model
+
+There are two distinct kinds of deletion:
+
+* **Soft delete** (`delete`, or the gallery's Delete button) marks the row
+  `is_deleted`. The file stays on disk and the image disappears from the
+  gallery and the public API. `restore` undoes it.
+* **Permanent deletion** (`purge`, `purge-deleted`, or the admin API) removes
+  the database row *and* the file from disk. This is irreversible.
+
+The gallery's Delete button only ever performs a soft delete. Permanent
+deletion requires the admin token.
+
+## Web server
+
+```bash
+image-organizer serve ~/Pictures/library --host 127.0.0.1 --port 8000 \
+    --admin-token "$GALLERY_ADMIN_TOKEN"
+```
+
+The server exposes the gallery page plus a small JSON API.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/` | The gallery page |
+| `GET` | `/api/health` | Liveness probe |
+| `GET` | `/api/images` | List visible images (`?include_deleted=true` for admins) |
+| `GET` | `/api/images/{sha}` | Fetch one image record |
+| `DELETE` | `/api/images/{sha}` | Soft-delete (any user) |
+| `POST` | `/api/images/{sha}/restore` | Undo a soft delete (admin) |
+| `DELETE` | `/api/images/{sha}/purge` | Permanent delete (admin) |
+| `POST` | `/api/upload` | Upload an image (multipart `file`) |
+| `GET` | `/files/{relative/path}` | Serve the arranged file |
+
+Admin endpoints require the token in the `X-Admin-Token` header or as an
+`admin_token` query parameter. The token may also be supplied through the
+`GALLERY_ADMIN_TOKEN` environment variable.
+
+The user making a request is taken from the `X-User` header, or the `user`
+query parameter, defaulting to `anonymous`. When a record is restricted with
+`view_by_user_only`, only that user can see it.
+
+Uploads are hashed and de-duplicated like arranged files: an upload whose
+content is already known is rejected as a duplicate and nothing is written.
+
+## Development
+
+```bash
+pip install -e ".[test]"
+pytest
+```
+
+The test suite builds real JPEG and PNG files with genuine EXIF blocks in
+`tests/helpers.py`, so the arrangement, parsing, API and deletion paths are all
+exercised against actual bytes rather than mocks.
+
+## Notes on the port
+
+The C++ original kept its records in a tab-separated `seen_sha` file. That file
+is imported once into `gallery.db` (automatically during `arrange`, or on
+demand with `import-manifest`) and is not written again. Importing it is
+idempotent, and the imported hashes still take part in de-duplication.
